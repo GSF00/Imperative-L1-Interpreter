@@ -68,19 +68,30 @@ type valor =
   | VSkip
   | VL of endereco
 and 
-  renv = (ident * valor) list 
+  renv = (ident * valor) list
+       (*| memoria = (endereco * valor) list*)
   
-type memoria = (endereco * valor) list 
+type memoria = (endereco * valor) list
+    
 
     (* funções de busca e de atualização de ambientes *)   
-
 
 let rec lookup a k  =
   match a with
     [] -> None
   | (y,i) :: tl -> if (y=k) then Some i else lookup tl k
        
-let  update a k i = (k,i) :: a  
+let  update a k i = (k,i) :: a 
+                    
+  
+    (* função length para memoria *)
+
+let rec length (mem:memoria) : int =
+  (match mem with
+     [] -> 0
+   | _ :: tl -> 1 + length tl)
+  
+  
   
 (**+++++++++++++++++++++++++++++++++++++++++*)
 (*         INFERÊNCIA DE TIPOS              *)
@@ -95,6 +106,8 @@ exception BugTypeInfer
 (* exceções para usuário da linguagem L1 *)
 
 exception TypeError of string
+    
+exception AddressError of string
 
 
 let rec typeinfer (tenv:tenv) (e:expr) : tipo =
@@ -263,7 +276,7 @@ let rec eval (renv:renv) (e:expr) (mem:memoria) : valor =
   match e with
     Num n -> VNum n
                
-  | Bcte b -> VBool b 
+  | Bcte b -> VBool b
 
   | Var x ->
       (match lookup renv x with
@@ -324,7 +337,47 @@ let rec eval (renv:renv) (e:expr) (mem:memoria) : valor =
                   
     (*extensão imperativa*)
 
-  | _ -> raise (TypeError "Não implementado")
+  | Skip -> VSkip
+    
+  | L n -> VL n 
+
+  | Asg(e1,e2) ->
+      let l = eval renv e1 mem in
+      let v = eval renv e2 mem in
+      (match l with
+         VL n ->
+           let mem' = update mem n v in
+           eval renv Skip mem'
+       | _ -> raise BugTypeInfer)
+      
+(**)
+  | Dref(e1) ->
+      let l = eval renv e1 mem in
+      (match l with
+         VL n ->
+           (match lookup mem n with
+              Some v -> v
+            | None -> raise (AddressError "erro no avaliador."))
+       | _ -> raise (AddressError "argumento errado para Dref."))
+      
+  | New(e1) ->
+      let v1 = eval renv e1 mem in
+      let index = length mem in
+      let mem' = update mem index v1 in
+      eval renv (L index) mem'
+      
+        
+  | Whl(e1, e2) ->
+      eval renv (If(e1, Seq(e2, Whl(e1, e2)), Skip)) mem
+        
+  | Seq(e1,e2) ->
+      let v1 = eval renv e1 mem in
+      let v2 = eval renv e2 mem in
+      (match v1 with
+         VSkip -> v2
+       | _ -> raise BugTypeInfer)
+  
+        (*| _ -> raise (TypeError "Não implementado")*)
     
 (* função auxiliar que converte tipo para string *)
 
@@ -425,15 +478,15 @@ let tst3 = Let("x", TyInt, Num 10, e2)
 
   (*   com acúcar sintático:
 
-   let rec pow (x:int) (y:int) : int = 
-                  if y = 0 then 1 else x * (pow x (y-1))  
-   in (pow 3) 4 
+let rec pow (x:int) (y:int) : int = 
+  if y = 0 then 1 else x * (pow x (y-1))  
+in (pow 3) 4 
      
-sem açucar sintático:
+  sem açucar sintático:
 
-  let rec pow: int -> (int --> int) = 
-    fn x:int => fn y:int => if y = 0 then 1 else x * (pow x (y-1)) 
-  in (pow 3) 4 
+     let rec pow: int -> (int --> int) = 
+       fn x:int => fn y:int => if y = 0 then 1 else x * (pow x (y-1)) 
+     in (pow 3) 4 
      
 do tipo int avalia para  81
 
