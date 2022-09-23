@@ -69,10 +69,13 @@ type valor =
   | VL of endereco
 and 
   renv = (ident * valor) list
-       (*| memoria = (endereco * valor) list*)
+       (*| memoria = (endereco * valor) list*) 
   
+
 type memoria = (endereco * valor) list
     
+
+type resultado = (valor * memoria)  
 
     (* funções de busca e de atualização de ambientes *)   
 
@@ -84,14 +87,18 @@ let rec lookup a k  =
 let  update a k i = (k,i) :: a 
                     
   
-    (* função length para memoria *)
+    (* função length e refresh para memoria *)
 
 let rec length (mem:memoria) : int =
   (match mem with
      [] -> 0
    | _ :: tl -> 1 + length tl)
   
-  
+let rec refresh  (mem:memoria) (enderec:endereco) (v:valor) : memoria =
+  (match mem with
+     [] -> []
+   | (h,d) :: tl -> if h = enderec then (enderec, v) :: refresh tl enderec v else (h,d) :: refresh tl enderec v)
+
   
 (**+++++++++++++++++++++++++++++++++++++++++*)
 (*         INFERÊNCIA DE TIPOS              *)
@@ -203,7 +210,7 @@ let rec typeinfer (tenv:tenv) (e:expr) : tipo =
   | Asg(e1,e2) ->
       let t1 = typeinfer tenv e1 in
       let t2 = typeinfer tenv e2 in
-      if t1 == TyRef(t2) then TyUnit
+      if t1 = TyRef(t2) then TyUnit
       else raise (TypeError "tipos incompatíveis na atribuição") 
    
     (*TDeref*)
@@ -272,62 +279,62 @@ let rec compute (oper: op) (v1: valor) (v2: valor) : valor =
   | _ -> raise BugTypeInfer
 
 
-let rec eval (renv:renv) (e:expr) (mem:memoria) : valor =
+let rec eval (renv:renv) (e:expr) (mem:memoria) : (resultado) =
   match e with
-    Num n -> VNum n
+    Num n -> (VNum n, mem)
                
-  | Bcte b -> VBool b
+  | Bcte b -> (VBool b, mem)
 
   | Var x ->
       (match lookup renv x with
-         Some v -> v
+         Some v -> (v, mem)
        | None -> raise BugTypeInfer)
       
   | Binop(oper,e1,e2) ->
-      let v1 = eval renv e1 mem in
-      let v2 = eval renv e2 mem in
-      compute oper v1 v2
+      let (v1,m1) = eval renv e1 mem in
+      let (v2,m2) = eval renv e2 m1 in
+      (compute oper v1 v2, m2)
 
   | Pair(e1,e2) ->
-      let v1 = eval renv e1 mem in
-      let v2 = eval renv e2 mem in
-      VPair(v1,v2)
+      let (v1,m1) = eval renv e1 mem in
+      let (v2,m2) = eval renv e2 m1 in
+      (VPair(v1,v2), m2)
 
   | Fst e ->
       (match eval renv e mem with
-       | VPair(v1,_) -> v1
+       | (VPair(v1,_), m1) -> (v1, m1)
        | _ -> raise BugTypeInfer)
 
   | Snd e ->
       (match eval renv e mem with
-       | VPair(_,v2) -> v2
+       | (VPair(_,v2), m1) -> (v2, m1)
        | _ -> raise BugTypeInfer)
 
   | If(e1,e2,e3) ->
       (match eval renv e1 mem with
-         VBool true  -> eval renv e2 mem
-       | VBool false -> eval renv e3 mem
+         (VBool true, m1)  -> eval renv e2 m1
+       | (VBool false, m2) -> eval renv e3 m2
        | _ -> raise BugTypeInfer)
 
-  | Fn (x,_,e1) ->  VClos(x,e1,renv)
+  | Fn (x,_,e1) ->  (VClos(x,e1,renv), mem)
 
   | App(e1,e2) ->
-      let v1 = eval renv e1 mem in
-      let v2 = eval renv e2 mem in
+      let (v1,m1) = eval renv e1 mem in
+      let (v2,m2) = eval renv e2 m1 in
       (match v1 with
          VClos(x,ebdy,renv') ->
            let renv'' = update renv' x v2
-           in eval renv'' ebdy mem
+           in eval renv'' ebdy m2
 
        | VRclos(f,x,ebdy,renv') ->
            let renv''  = update renv' x v2 in
            let renv''' = update renv'' f v1
-           in eval renv''' ebdy mem
+           in eval renv''' ebdy m2
        | _ -> raise BugTypeInfer)
 
   | Let(x,_,e1,e2) ->
-      let v1 = eval renv e1 mem
-      in eval (update renv x v1) e2 mem
+      let (v1,m1) = eval renv e1 mem
+      in eval (update renv x v1) e2 m1
 
   | LetRec(f,TyFn(t1,t2),Fn(x,tx,e1), e2) when t1 = tx ->
       let renv'= update renv f (VRclos(f,x,e1,renv))
@@ -337,33 +344,40 @@ let rec eval (renv:renv) (e:expr) (mem:memoria) : valor =
                   
     (*extensão imperativa*)
 
-  | Skip -> VSkip
+  | Skip -> (VSkip, mem)
     
-  | L n -> VL n 
-
+  | L n -> (VL n, mem)
+           
+             (*
+               let tv = lookup mem n in
+               (match tv with
+                  Some v -> VPair((VL n), v)
+                | _ -> raise BugTypeInfer)
+         
+*)
   | Asg(e1,e2) ->
-      let l = eval renv e1 mem in
-      let v = eval renv e2 mem in
-      (match l with
+      let (l1,m1) = eval renv e1 mem in
+      let (v2,m2) = eval renv e2 m1 in
+      (match l1 with
          VL n ->
-           let mem' = update mem n v in
+           let mem' = refresh m2 n v2 in
            eval renv Skip mem'
-       | _ -> raise BugTypeInfer)
-      
-(**)
+       | _ -> raise (AddressError "argumento errado para Asg."))
+  
   | Dref(e1) ->
-      let l = eval renv e1 mem in
+      let (l, m1) = eval renv e1 mem in
       (match l with
          VL n ->
-           (match lookup mem n with
-              Some v -> v
+           (match lookup m1 n with
+              Some v -> (v, m1)
             | None -> raise (AddressError "erro no avaliador."))
+                          
        | _ -> raise (AddressError "argumento errado para Dref."))
       
   | New(e1) ->
-      let v1 = eval renv e1 mem in
+      let (v1,m1) = eval renv e1 mem in
       let index = length mem in
-      let mem' = update mem index v1 in
+      let mem' = update m1 index v1 in
       eval renv (L index) mem'
       
         
@@ -371,13 +385,13 @@ let rec eval (renv:renv) (e:expr) (mem:memoria) : valor =
       eval renv (If(e1, Seq(e2, Whl(e1, e2)), Skip)) mem
         
   | Seq(e1,e2) ->
-      let v1 = eval renv e1 mem in
-      let v2 = eval renv e2 mem in
+      let (v1,m1) = eval renv e1 mem in
+      let (v2,m2) = eval renv e2 m1 in
       (match v1 with
-         VSkip -> v2
+         VSkip -> (v2, m2)
        | _ -> raise BugTypeInfer)
   
-        (*| _ -> raise (TypeError "Não implementado")*)
+      
     
 (* função auxiliar que converte tipo para string *)
 
@@ -408,7 +422,7 @@ let rec vtos (v: valor) : string =
 let int_bse (e:expr) (mem:memoria) : unit =
   try
     let t = typeinfer [] e in
-    let v = eval [] e mem in
+    let (v,m) = eval [] e mem in
     print_string ((vtos v) ^ " : " ^ (ttos t))
   with
     TypeError msg ->  print_string ("erro de tipo - " ^ msg)
@@ -435,11 +449,13 @@ let int_bse (e:expr) (mem:memoria) : unit =
     do tipo int , avalia para 12 
 *)
 
-let e'' = Let("x", TyInt, Num 5, App(Var "foo", Num 10))
+                        (*
 
-let e'  = Let("foo", TyFn(TyInt,TyInt), Fn("y", TyInt, Binop(Sum, Var "x", Var "y")), e'')
+                          let e'' = Let("x", TyInt, Num 5, App(Var "foo", Num 10))
 
-let tst = Let("x", TyInt, Num(2), e') 
+                          let e'  = Let("foo", TyFn(TyInt,TyInt), Fn("y", TyInt, Binop(Sum, Var "x", Var "y")), e'')
+
+                          let tst = Let("x", TyInt, Num(2), e') 
     
     (*
      let x:int = 2 
@@ -451,7 +467,7 @@ let tst = Let("x", TyInt, Num(2), e')
 *)
 
 
-let e2 = Let("x", TyInt, Num 5, Var "foo")
+                          let e2 = Let("x", TyInt, Num 5, Var "foo")
 
 let e1  = Let("foo", TyFn(TyInt,TyInt), Fn("y", TyInt, Binop(Sum, Var "x", Var "y")), e2)
 
@@ -519,3 +535,37 @@ let pow =
 let dobro = Fn("y", TyInt, Binop(Mult, Var "y", Num 2))
     
 let inc = Fn("y", TyInt, Binop(Sum, Var "y", Num 1))
+    
+          *)    
+
+     (* testes para L1 imperativa *)
+
+let teste1 = Let("x", TyRef TyInt, New (Num 3),
+                 Let("y", TyInt, Dref (Var "x"), 
+                     Seq(Asg(Var "x", Binop(Sum, Dref(Var "x"), Num 1)), 
+                         Binop(Sum, Var "y",  Dref (Var "x"))))) 
+    
+  
+let teste2 = Let("x", TyRef TyInt, New (Num 0),
+                 Let("y", TyRef TyInt, Var "x", 
+                     Seq(Asg(Var "x", Num 1), 
+                         Dref (Var "y"))))
+    
+let counter1 = Let("counter", TyRef TyInt, New (Num 0),
+                   Let("next_val", TyFn(TyUnit, TyInt),
+                       Fn("w", TyUnit, 
+                          Seq(Asg(Var "counter",Binop(Sum, Dref(Var "counter"), Num 1)),
+                              Dref (Var "counter"))),
+                       Binop(Sum, App (Var "next_val", Skip), 
+                             App (Var "next_val", Skip))))
+    
+let whilefat = Whl(Binop(Gt, Dref (Var "z"), Num 0), 
+                   Seq( Asg(Var "y", Binop(Mult, Dref (Var "y"), Dref (Var "z"))), 
+                        Asg(Var "z", Binop(Sub, Dref (Var "z"), Num 1)))                       
+                  ) 
+                               
+                             
+let bodyfat = Let("z", TyRef TyInt, New (Var "x"),
+                  Let("y", TyRef TyInt, New (Num 1), Seq (whilefat, Dref (Var "y"))))
+    
+let impfat = Let("fat", TyFn(TyInt,TyInt), Fn("x", TyInt, bodyfat), App(Var "fat", Num 5))
